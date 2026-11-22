@@ -14,7 +14,7 @@ namespace DailyPass;
  */
 final class ChargeJob
 {
-    private const TERMINAL_STATUSES = ['SUCCESS', 'FAILED_PERMANENT', 'GRACE_EXHAUSTED', 'NEEDS_REVIEW', 'DUPLICATE'];
+    private const TERMINAL_STATUSES = ['SUCCESS', 'FAILED_PERMANENT', 'GRACE_EXHAUSTED', 'NEEDS_REVIEW', 'DUPLICATE', 'CANCELLED'];
 
     public function __construct(
         private readonly array $cfg,
@@ -56,6 +56,12 @@ final class ChargeJob
 
         $summary = ['day' => $day, 'processed' => 0, 'charged' => 0, 'graced' => 0, 'exhausted' => 0, 'suspended' => 0, 'needsReview' => 0, 'skipped' => 0];
 
+        // Audit hygiene: never leave an open GRACE row on a billing day that
+        // has already passed — close it out as exhausted.
+        foreach ($this->store->listStaleGrace($day, $nowStr) as $stale) {
+            $this->store->updateCharge((int)$stale['id'], ['status' => 'GRACE_EXHAUSTED', 'next_retry_at' => null], null, 'billing day closed with retries unresolved');
+        }
+
         foreach ($this->store->listSubscribers(['ACTIVE']) as $sub) {
             $ref = (string)$sub['subscriber_ref'];
             $row = $this->store->getCharge($ref, $day);
@@ -76,13 +82,23 @@ final class ChargeJob
             }
 
             // GRACE row whose budget ran out while we were away (e.g. restart):
-            if ($row['status'] === 'GRACE' && !$row['next_retry_at'] && (int)$row['attempt_count'] >= count($this->cfg['graceIntervalsSec'])) {
+            if ($row['status'] === 'GRACE' && !$row['next_retry_at'] && (int)$row['grace_attempts'] >= count($this->cfg['graceIntervalsSec'])) {
                 $this->store->updateCharge((int)$row['id'], ['status' => 'GRACE_EXHAUSTED'], null, 'exhausted after restart');
                 $summary['exhausted']++;
                 continue;
             }
             if ($row['next_retry_at'] !== null && $row['next_retry_at'] > $nowStr) {
                 $summary['skipped']++; // not due yet
+                continue;
+            }
+
+            // Close the opt-out window as far as SQLite allows: re-read the
+            // subscriber right before touching money. A STOP that landed after
+            // this run's snapshot (or during an earlier attempt) never gets a
+            // debit; its reserved day is closed as CANCELLED.
+            if ((string)($this->store->getSubscriber($ref)['status'] ?? '') !== 'ACTIVE') {
+                $this->store->updateCharge((int)$row['id'], ['status' => 'CANCELLED', 'next_retry_at' => null], null, 'subscriber no longer ACTIVE — day cancelled, no debit sent');
+                $summary['skipped']++;
                 continue;
             }
 
@@ -139,20 +155,23 @@ final class ChargeJob
                 return;
 
             case 'GRACE_RETRY':
-            case 'THROTTLE':
             case 'TRANSIENT':
-                $intervals = $kind === 'THROTTLE'
-                    ? array_fill(0, count($this->cfg['graceIntervalsSec']), (float)$this->cfg['throttleRetrySec'])
-                    : $this->cfg['graceIntervalsSec'];
-                $next = RetryPolicy::nextRetryAt($now, $attemptCount, $intervals);
-                if ($next !== null) {
-                    $this->store->updateCharge((int)$row['id'], ['status' => 'GRACE', 'last_status_code' => $code, 'next_retry_at' => $next],
-                        is_string($code) ? $code : null, "grace retry scheduled (attempt $attemptCount)");
+                $this->scheduleGrace($row, $now, $code, $summary);
+                return;
+
+            case 'THROTTLE':
+                // E1318 has its own small budget: a busy gateway must not eat
+                // the subscriber's balance-retry budget for the day.
+                $throttleAttempt = (int)$row['throttle_attempts'] + 1;
+                $patch = ['throttle_attempts' => $throttleAttempt];
+                if ($throttleAttempt <= (int)$this->cfg['throttleMaxRetries']) {
+                    $patch += ['status' => 'GRACE', 'last_status_code' => $code,
+                        'next_retry_at' => Iso::plusSeconds($now, (float)$this->cfg['throttleRetrySec'])];
+                    $this->store->updateCharge((int)$row['id'], $patch, is_string($code) ? $code : null, "throttle backoff (retry $throttleAttempt of {$this->cfg['throttleMaxRetries']})");
                     $summary['graced']++;
                 } else {
-                    $this->store->updateCharge((int)$row['id'], ['status' => 'GRACE_EXHAUSTED', 'last_status_code' => $code, 'next_retry_at' => null],
-                        is_string($code) ? $code : null, 'retries exhausted for this day');
-                    $summary['exhausted']++;
+                    $this->store->updateCharge((int)$row['id'], $patch, is_string($code) ? $code : null, 'throttle budget exhausted');
+                    $this->scheduleGrace($row, $now, $code, $summary);
                 }
                 return;
 
@@ -192,6 +211,32 @@ final class ChargeJob
                     is_string($code) ? $code : null, 'unexpected platform code');
                 $summary['needsReview']++;
                 Logger::error('unexpected platform status code', ['sub' => Logger::mask($ref), 'statusCode' => $code]);
+        }
+    }
+
+    /**
+     * Grace (E1326 / transport errors) uses its OWN attempt counter, so the
+     * balance-retry budget is exactly GRACE_RETRY_INTERVALS_SEC long no matter
+     * how many throttles or attempts happened before.
+     *
+     * @param array<string, mixed> $row
+     * @param array<string, int>   $summary
+     */
+    private function scheduleGrace(array $row, \DateTimeImmutable $now, mixed $code, array &$summary): void
+    {
+        $graceAttempt = (int)$row['grace_attempts'] + 1;
+        $intervals = $this->cfg['graceIntervalsSec'];
+        $next = RetryPolicy::nextRetryAt($now, $graceAttempt, $intervals);
+        if ($next !== null) {
+            $this->store->updateCharge((int)$row['id'],
+                ['status' => 'GRACE', 'grace_attempts' => $graceAttempt, 'last_status_code' => $code, 'next_retry_at' => $next],
+                is_string($code) ? $code : null, "grace retry scheduled (grace attempt $graceAttempt of " . count($intervals) . ')');
+            $summary['graced']++;
+        } else {
+            $this->store->updateCharge((int)$row['id'],
+                ['status' => 'GRACE_EXHAUSTED', 'grace_attempts' => $graceAttempt, 'last_status_code' => $code, 'next_retry_at' => null],
+                is_string($code) ? $code : null, 'grace retries exhausted for this day');
+            $summary['exhausted']++;
         }
     }
 }

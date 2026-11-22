@@ -1,8 +1,8 @@
 FROM php:8.2-cli
 
-# the official php images ship pdo_sqlite/sqlite3/curl/pcntl enabled; fail the
+# the official php images ship pdo_sqlite/sqlite3/curl enabled; fail the
 # build early (not the container) if that ever changes
-RUN php -r 'foreach (["pdo_sqlite","sqlite3","curl","pcntl"] as $e) { if (!extension_loaded($e)) { fwrite(STDERR, "missing extension: $e\n"); exit(1); } }'
+RUN php -r 'foreach (["pdo_sqlite","sqlite3","curl"] as $e) { if (!extension_loaded($e)) { fwrite(STDERR, "missing extension: $e\n"); exit(1); } }'
 
 WORKDIR /app
 COPY . .

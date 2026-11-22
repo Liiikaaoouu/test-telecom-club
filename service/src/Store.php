@@ -52,6 +52,59 @@ final class Store
         $st->execute([$status, Iso::now(), $ref]);
     }
 
+    /**
+     * Atomic opt-in claim: exactly one racing request can move a subscriber
+     * into OPTING_IN. Returns ['owner' => bool, 'prev' => ?string] — prev is
+     * the status the owner overwrote (null = fresh subscriber), or, for a
+     * non-owner, the status that blocked the claim (ACTIVE / OPTING_IN /
+     * claim-taken when another request won the race).
+     *
+     * @return array{owner: bool, prev: ?string}
+     */
+    public function claimOptIn(string $ref): array
+    {
+        $now = Iso::now();
+        $st = $this->pdo->prepare(
+            'INSERT INTO subscribers (subscriber_ref, status, created_at, updated_at) VALUES (?, \'OPTING_IN\', ?, ?)
+             ON CONFLICT(subscriber_ref) DO NOTHING');
+        $st->execute([$ref, $now, $now]);
+        if ($st->rowCount() > 0) {
+            return ['owner' => true, 'prev' => null]; // fresh subscriber, claim acquired
+        }
+        $cur = $this->getSubscriber($ref);
+        if ($cur === null || in_array($cur['status'], ['ACTIVE', 'OPTING_IN'], true)) {
+            return ['owner' => false, 'prev' => (string)($cur['status'] ?? 'claim-taken')];
+        }
+        $st2 = $this->pdo->prepare(
+            'UPDATE subscribers SET status = \'OPTING_IN\', updated_at = ? WHERE subscriber_ref = ? AND status = ?');
+        $st2->execute([$now, $ref, $cur['status']]);
+        if ($st2->rowCount() > 0) {
+            return ['owner' => true, 'prev' => (string)$cur['status']]; // re-opt-in claim acquired
+        }
+        return ['owner' => false, 'prev' => 'claim-taken'];
+    }
+
+    /** Adopts an OPTING_IN claim left by a crashed request (row not updated since $staleBefore). */
+    public function takeoverStaleOptInClaim(string $ref, string $staleBeforeIso): bool
+    {
+        $st = $this->pdo->prepare(
+            'UPDATE subscribers SET status = \'OPTING_IN\', updated_at = ? WHERE subscriber_ref = ? AND status = \'OPTING_IN\' AND updated_at < ?');
+        $st->execute([Iso::now(), $ref, $staleBeforeIso]);
+        return $st->rowCount() > 0;
+    }
+
+    /** Rolls the claimed row back after a failed platform call (or deletes a fresh claim). */
+    public function restoreOptInClaim(string $ref, ?string $prevStatus): void
+    {
+        if ($prevStatus === null) {
+            $st = $this->pdo->prepare('DELETE FROM subscribers WHERE subscriber_ref = ? AND status = \'OPTING_IN\'');
+            $st->execute([$ref]);
+            return;
+        }
+        $st = $this->pdo->prepare('UPDATE subscribers SET status = ?, updated_at = ? WHERE subscriber_ref = ? AND status = \'OPTING_IN\'');
+        $st->execute([$prevStatus, Iso::now(), $ref]);
+    }
+
     /** Returns true only for the call that actually changed the state (idempotent transitions). */
     public function setSubscriberStatusIfNot(string $ref, string $status, string $exceptStatus): bool
     {
@@ -96,7 +149,7 @@ final class Store
      */
     public function updateCharge(int $id, array $patch, ?string $platformCode = null, ?string $note = null): array
     {
-        $allowed = ['status', 'attempt_count', 'last_status_code', 'reference_id', 'internal_trx_id', 'next_retry_at', 'reconciled'];
+        $allowed = ['status', 'attempt_count', 'grace_attempts', 'throttle_attempts', 'last_status_code', 'reference_id', 'internal_trx_id', 'next_retry_at', 'reconciled'];
         $st = $this->pdo->prepare('SELECT * FROM charges WHERE id = ?');
         $st->execute([$id]);
         $cur = $st->fetch();
@@ -135,6 +188,20 @@ final class Store
             'SELECT * FROM charges WHERE (?1 IS NULL OR subscriber_ref = ?1) AND (?2 IS NULL OR billing_day = ?2)
              ORDER BY id DESC LIMIT 500');
         $st->execute([$ref, $day]);
+        return $st->fetchAll();
+    }
+
+    /**
+     * GRACE rows of PAST billing days whose retry deadline passed — the audit
+     * trail must never show an open (non-terminal) charge for a closed day.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function listStaleGrace(string $beforeDay, string $nowIso): array
+    {
+        $st = $this->pdo->prepare(
+            "SELECT * FROM charges WHERE status = 'GRACE' AND billing_day < ?1 AND (next_retry_at IS NULL OR next_retry_at <= ?2)");
+        $st->execute([$beforeDay, $nowIso]);
         return $st->fetchAll();
     }
 

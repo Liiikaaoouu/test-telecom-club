@@ -97,5 +97,33 @@ T::test('STOP from an unknown number is accepted and harmless', function (): voi
     stopStack($s);
 });
 
+T::test('STOP during a multi-subscriber run: second subscriber is NOT debited (day CANCELLED)', function (): void {
+    $s = bootStack();
+    $a = 'tel:3000000011';
+    $b = 'tel:3000000012'; // ref sorts after $a → processed second
+
+    jpost("{$s['serviceUrl']}/opt-in", ['msisdn' => $a]);
+    jpost("{$s['serviceUrl']}/opt-in", ['msisdn' => $b]);
+    jpost("{$s['mockUrl']}/admin/latency", ['ms' => 800]); // slow the debits
+
+    $pending = asyncPost("{$s['serviceUrl']}/jobs/daily-charge", []);
+    usleep(200_000); // STOP for $b lands after the job snapshotted ACTIVE,
+    // while $a's debit is still in flight
+    jpost("{$s['mockUrl']}/admin/mo", ['sourceAddress' => $b, 'message' => 'STOP']);
+    $resp = readPendingResponse($pending);
+
+    T::eq($resp['charged'] ?? null, 1, 'only $a was charged');
+    $debits = jget("{$s['mockUrl']}/admin/debits")['data'];
+    $bCalls = array_values(array_filter($debits['log'], fn($c) => $c['subscriber_id'] === $b));
+    T::eq(count($bCalls), 0, 'no debit was EVER sent for the stopped subscriber');
+    T::eq($debits['successfulCount'] ?? null, 1);
+
+    $dayB = jget("{$s['serviceUrl']}/admin/charges?subscriber=" . rawurlencode($b))['data']['charges'][0] ?? [];
+    T::eq($dayB['status'] ?? null, 'CANCELLED', 'reserved day closed terminal — audit shows no open charge');
+
+    jpost("{$s['mockUrl']}/admin/latency", ['ms' => 0]);
+    stopStack($s);
+});
+
 T::finish('optout');
 exit(T::exitCode());

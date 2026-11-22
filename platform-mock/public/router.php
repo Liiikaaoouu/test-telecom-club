@@ -15,9 +15,15 @@ namespace PlatformMock;
 
 require __DIR__ . '/../src/autoload.php';
 
+// Credentials come from env only — the mock fails fast without them, mirroring
+// the service's rule that secrets are never hard-coded.
+if (getenv('APP_ID') === false || getenv('APP_ID') === '' || getenv('APP_PASSWORD') === false || getenv('APP_PASSWORD') === '') {
+    fwrite(STDERR, "APP_ID and APP_PASSWORD must be provided via environment\n");
+    exit(1);
+}
 $creds = [
-    'applicationId' => getenv('APP_ID') ?: 'APP_000123',
-    'password'      => getenv('APP_PASSWORD') ?: 'demo-password',
+    'applicationId' => (string)getenv('APP_ID'),
+    'password'      => (string)getenv('APP_PASSWORD'),
 ];
 $serviceUrl = rtrim(getenv('SERVICE_URL') ?: 'http://127.0.0.1:8080', '/');
 $state = State::open(getenv('MOCK_DB') ?: (getcwd() . '/data/mock.db'));
@@ -76,10 +82,12 @@ if ($method === 'POST' && $path === '/caas/direct/debit') {
     }
 
     // dedup on the idempotency key: a key that already SUCCEEDED is consumed forever
-    if ($state->debitSuccess($ext) !== null) {
+    if (($original = $state->debitSuccess($ext)) !== null) {
         $state->logDebitAttempt($ext, $subscriberId, isset($body['amount']) ? (string)$body['amount'] : null, 'E1337');
         Http::log('debit DUPLICATE', ['externalTrxId' => $ext]);
-        respond(200, ['statusCode' => 'E1337', 'statusDetail' => 'Duplicate request', 'externalTrxId' => $ext]);
+        // a real gateway's duplicate reply still identifies the original transaction
+        respond(200, ['statusCode' => 'E1337', 'statusDetail' => 'Duplicate request', 'externalTrxId' => $ext,
+            'internalTrxId' => $original['internalTrxId'] ?? null, 'referenceId' => $original['referenceId'] ?? null]);
     }
 
     if (($ms = $state->latencyMs()) > 0) {

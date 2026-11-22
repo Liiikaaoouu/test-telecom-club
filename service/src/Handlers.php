@@ -49,21 +49,41 @@ final class Handlers
             return;
         }
         $ref = (string)$v['value'];
-        $existing = $this->store->getSubscriber($ref);
-        if (($existing['status'] ?? null) === 'ACTIVE') {
-            // a subscriber who is already active must not be double-subscribed
-            $this->respond(200, ['ok' => true, 'alreadyActive' => true, 'status' => 'ACTIVE']);
+
+        // Atomic claim: whatever races with this request, at most ONE caller
+        // can drive a (re-)subscription for this subscriber — no double
+        // /subscription/send, no double welcome SMS.
+        $claim = $this->store->claimOptIn($ref);
+        if (!$claim['owner'] && $claim['prev'] === 'OPTING_IN') {
+            $staleBefore = Iso::plusSeconds(new \DateTimeImmutable('now', new \DateTimeZone('UTC')), -60);
+            $claim = ['owner' => $this->store->takeoverStaleOptInClaim($ref, $staleBefore), 'prev' => 'INACTIVE'];
+        }
+        if (!$claim['owner']) {
+            if ($claim['prev'] === 'ACTIVE') {
+                // a subscriber who is already active must not be double-subscribed
+                $this->respond(200, ['ok' => true, 'alreadyActive' => true, 'status' => 'ACTIVE']);
+                return;
+            }
+            $this->respond(409, ['ok' => false, 'error' => 'opt-in already in progress']);
             return;
         }
 
-        $res = $this->platform->subscriptionSend($ref, '1');
+        try {
+            $res = $this->platform->subscriptionSend($ref, '1');
+        } catch (\Throwable $e) {
+            $this->store->restoreOptInClaim($ref, $claim['prev']);
+            Logger::error('opt-in platform call failed', ['sub' => Logger::mask($ref), 'error' => (string)$e]);
+            $this->respond(502, ['ok' => false, 'error' => 'platform unreachable']);
+            return;
+        }
         if (($res['statusCode'] ?? null) === 'S1000') {
-            $this->store->upsertSubscriber($ref, 'ACTIVE');
+            $this->store->setSubscriberStatus($ref, 'ACTIVE');
             $this->job->sendSms($ref, sprintf(self::WELCOME_SMS_TPL, $this->cfg['amount'], $this->cfg['currency']));
             Logger::info('subscriber opted in', ['sub' => Logger::mask($ref)]);
             $this->respond(200, ['ok' => true, 'status' => 'ACTIVE']);
             return;
         }
+        $this->store->restoreOptInClaim($ref, $claim['prev']);
         Logger::warn('opt-in rejected by platform', ['sub' => Logger::mask($ref), 'statusCode' => $res['statusCode'] ?? null]);
         $this->respond(502, ['ok' => false, 'statusCode' => $res['statusCode'] ?? null, 'error' => 'platform rejected subscription']);
     }
@@ -92,14 +112,17 @@ final class Handlers
         $sub = $this->store->getSubscriber($ref);
         switch ($status) {
             case 'REGISTERED':
-                $wasActive = ($sub['status'] ?? null) === 'ACTIVE';
+                // Explicit user intent wins over out-of-band events: a late or
+                // replayed REGISTERED must NOT re-activate an opted-out
+                // (INACTIVE) or suspended subscriber — that would silently
+                // resume charging someone who stopped.
                 if ($sub === null) {
                     $this->store->upsertSubscriber($ref, 'ACTIVE');
-                } elseif (!$wasActive) {
-                    $this->store->setSubscriberStatus($ref, 'ACTIVE');
-                }
-                if (!$wasActive) {
                     $this->job->sendSms($ref, sprintf(self::WELCOME_SMS_TPL, $this->cfg['amount'], $this->cfg['currency']));
+                } elseif (in_array($sub['status'], ['PENDING', 'OPTING_IN'], true)) {
+                    $this->store->setSubscriberStatus($ref, 'ACTIVE');
+                } else {
+                    Logger::info('REGISTERED ignored for existing subscriber', ['sub' => Logger::mask($ref), 'state' => (string)$sub['status']]);
                 }
                 break;
             case 'UNREGISTERED':

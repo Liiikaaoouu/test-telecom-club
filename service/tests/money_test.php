@@ -119,5 +119,54 @@ T::test('Service restart: charge-once state survives the process', function (): 
     stopStack($s);
 });
 
+T::test('Concurrent opt-ins (F1 race): the platform is called exactly once', function (): void {
+    $s = bootStack();
+    $tel = 'tel:1000000010';
+
+    $p1 = asyncPost("{$s['serviceUrl']}/opt-in", ['msisdn' => $tel]);
+    $p2 = asyncPost("{$s['serviceUrl']}/opt-in", ['msisdn' => $tel]);
+    $r1 = readPendingResponse($p1);
+    $r2 = readPendingResponse($p2);
+
+    // exactly one request may drive the subscription; the other acknowledges
+    // it as already active or declines with "in progress" — never a second send.
+    T::ok(($r1['ok'] ?? false) || ($r2['ok'] ?? false), 'at least one opt-in succeeded');
+    $st = jget("{$s['serviceUrl']}/status?subscriber=" . rawurlencode($tel))['data'];
+    T::eq($st['status'] ?? null, 'ACTIVE', 'subscriber ends ACTIVE');
+
+    $subs = jget("{$s['mockUrl']}/admin/subscriptions")['data'];
+    $action1 = array_values(array_filter($subs['calls'], fn($c) => $c['action'] === '1'));
+    T::eq(count($action1), 1, 'exactly one /subscription/send action:"1" despite the race');
+
+    $sms = jget("{$s['mockUrl']}/admin/sms")['data'];
+    T::eq($sms['count'] ?? 0, 1, 'exactly one welcome SMS');
+
+    stopStack($s);
+});
+
+T::test('Late REGISTERED after STOP does not re-activate (user intent wins)', function (): void {
+    $s = bootStack();
+    $tel = 'tel:1000000011';
+
+    jpost("{$s['serviceUrl']}/opt-in", ['msisdn' => $tel]);
+    jpost("{$s['mockUrl']}/admin/mo", ['sourceAddress' => $tel, 'message' => 'STOP']);
+    $before = jget("{$s['serviceUrl']}/status?subscriber=" . rawurlencode($tel))['data']['status'] ?? null;
+    T::eq($before, 'INACTIVE');
+
+    // an out-of-band REGISTERED with a fresh timestamp (not a deduped replay)
+    jpost("{$s['serviceUrl']}/webhooks/subscription-notification", [
+        'applicationId' => 'APP_TEST', 'subscriberId' => $tel, 'frequency' => 'DAILY',
+        'status' => 'REGISTERED', 'version' => '1.0', 'timeStamp' => '2099-01-01T12:00:00Z',
+    ]);
+
+    $st = jget("{$s['serviceUrl']}/status?subscriber=" . rawurlencode($tel))['data'];
+    T::eq($st['status'] ?? null, 'INACTIVE', 'STOPped subscriber stays INACTIVE after a late REGISTERED');
+
+    $j = jpost("{$s['serviceUrl']}/jobs/daily-charge", ['day' => '2099-02-02']);
+    T::eq($j['charged'] ?? null, 0, 'and is never charged again');
+
+    stopStack($s);
+});
+
 T::finish('money');
 exit(T::exitCode());

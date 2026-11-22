@@ -8,7 +8,7 @@ final class Database
     private const SCHEMA = <<<'SQL'
 CREATE TABLE IF NOT EXISTS subscribers (
   subscriber_ref TEXT PRIMARY KEY,
-  status TEXT NOT NULL CHECK (status IN ('PENDING','ACTIVE','SUSPENDED','INACTIVE')),
+  status TEXT NOT NULL CHECK (status IN ('PENDING','OPTING_IN','ACTIVE','SUSPENDED','INACTIVE')),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -21,8 +21,10 @@ CREATE TABLE IF NOT EXISTS charges (
   amount TEXT NOT NULL,
   currency TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN
-    ('PENDING','GRACE','SUCCESS','FAILED_PERMANENT','DUPLICATE','GRACE_EXHAUSTED','NEEDS_REVIEW')),
+    ('PENDING','GRACE','SUCCESS','FAILED_PERMANENT','DUPLICATE','GRACE_EXHAUSTED','NEEDS_REVIEW','CANCELLED')),
   attempt_count INTEGER NOT NULL DEFAULT 0,
+  grace_attempts INTEGER NOT NULL DEFAULT 0,
+  throttle_attempts INTEGER NOT NULL DEFAULT 0,
   last_status_code TEXT,
   reference_id TEXT,
   internal_trx_id TEXT,

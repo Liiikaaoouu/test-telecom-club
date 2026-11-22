@@ -86,13 +86,18 @@ T::test('a malformed DAILY_AMOUNT fails fast at boot, never reaching a debit', f
         . 'try { \DailyPass\Config::fromEnv(); echo "OK"; }'
         . 'catch (\Throwable $e) { echo "THREW:" . $e->getMessage(); }';
     $out = [];
-    exec('DAILY_AMOUNT=5.0 php -r ' . escapeshellarg($code) . ' 2>&1', $out);
+    exec('APP_ID=A APP_PASSWORD=p DAILY_AMOUNT=5.0 php -r ' . escapeshellarg($code) . ' 2>&1', $out);
     $joined = implode("\n", $out);
     T::contains($joined, 'THREW', 'config rejects amount without 2 decimals');
 
     $out2 = [];
-    exec('DAILY_AMOUNT=5.00 php -r ' . escapeshellarg($code) . ' 2>&1', $out2);
+    exec('APP_ID=A APP_PASSWORD=p DAILY_AMOUNT=5.00 php -r ' . escapeshellarg($code) . ' 2>&1', $out2);
     T::eq(implode("\n", $out2), 'OK', 'valid amount boots');
+
+    // secrets must come from the environment — no hard-coded defaults
+    $out3 = [];
+    exec('env -u APP_ID -u APP_PASSWORD DAILY_AMOUNT=5.00 php -r ' . escapeshellarg($code) . ' 2>&1', $out3);
+    T::contains(implode("\n", $out3), 'THREW', 'boot without APP_ID/APP_PASSWORD fails fast (no default credentials)');
 });
 
 T::finish('security');

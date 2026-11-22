@@ -8,6 +8,11 @@ declare(strict_types=1);
  * bypass the money-safety machinery.
  */
 
+// pcntl is not loaded in php:8.2-cli; posix provides posix_kill but not the
+// signal constants, so define the Linux values ourselves.
+defined('SIGTERM') || define('SIGTERM', 15);
+defined('SIGKILL') || define('SIGKILL', 9);
+
 function projectRoot(): string
 {
     return dirname(__DIR__, 2);

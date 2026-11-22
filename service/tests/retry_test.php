@@ -160,5 +160,55 @@ T::test('different billing day → new idempotency key → charged again (once)'
     stopStack($s);
 });
 
+T::test('E1318 throttle does NOT consume the E1326 grace budget', function (): void {
+    $s = bootStack(); // grace intervals: 1,2,3s — throttle backoff: 0.5s
+    $tel = 'tel:2000000007';
+
+    jpost("{$s['serviceUrl']}/opt-in", ['msisdn' => $tel]);
+    jpost("{$s['mockUrl']}/admin/mode", ['status' => 'E1318', 'subscriberId' => $tel]);
+    $j1 = jpost("{$s['serviceUrl']}/jobs/daily-charge");
+    T::eq($j1['graced'] ?? null, 1, 'throttle → short backoff');
+
+    // balance problem arrives; it must still get the FULL grace budget
+    jpost("{$s['mockUrl']}/admin/mode", ['status' => 'E1326', 'subscriberId' => $tel]);
+    usleep(600_000); // throttle backoff (0.5s) has passed
+    $j2 = jpost("{$s['serviceUrl']}/jobs/daily-charge");
+    T::eq($j2['graced'] ?? null, 1, 'E1326 uses grace attempt #1 (not #2 — throttle is separate)');
+
+    jpost("{$s['mockUrl']}/admin/mode", ['status' => 'S1000', 'subscriberId' => $tel]);
+    usleep(1_300_000); // grace interval #1 = 1s; with a shared counter this row
+    // would be scheduled at +2s and the run below would skip it (charged:0)
+    $j3 = jpost("{$s['serviceUrl']}/jobs/daily-charge");
+    T::eq($j3['charged'] ?? null, 1, 'grace retry fires on schedule after a throttle detour');
+
+    $debits = jget("{$s['mockUrl']}/admin/debits")['data'];
+    T::eq($debits['successfulCount'] ?? null, 1);
+    T::eq(count($debits['log'] ?? []), 3, 'three calls, one key');
+    T::eq($debits['log'][0]['external_trx_id'], $debits['log'][2]['external_trx_id'], 'same idempotency key throughout');
+
+    stopStack($s);
+});
+
+T::test('Stale GRACE of a past billing day is closed to GRACE_EXHAUSTED (audit hygiene)', function (): void {
+    $s = bootStack();
+    $tel = 'tel:2000000008';
+
+    jpost("{$s['serviceUrl']}/opt-in", ['msisdn' => $tel]);
+    jpost("{$s['mockUrl']}/admin/mode", ['status' => 'E1326', 'subscriberId' => $tel]);
+    $j1 = jpost("{$s['serviceUrl']}/jobs/daily-charge", ['day' => '2099-01-02']);
+    T::eq($j1['graced'] ?? null, 1);
+    usleep(1_200_000); // its retry deadline passes
+
+    // the next run works on a NEWER day; the old open row must be closed
+    jpost("{$s['mockUrl']}/admin/mode", ['status' => 'S1000']);
+    $j2 = jpost("{$s['serviceUrl']}/jobs/daily-charge", ['day' => '2099-01-03']);
+    T::eq($j2['charged'] ?? null, 1);
+
+    $old = jget("{$s['serviceUrl']}/admin/charges?subscriber=" . rawurlencode($tel) . '&day=2099-01-02')['data']['charges'][0] ?? [];
+    T::eq($old['status'] ?? null, 'GRACE_EXHAUSTED', 'no non-terminal row left on a closed day');
+
+    stopStack($s);
+});
+
 T::finish('retry');
 exit(T::exitCode());

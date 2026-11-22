@@ -16,20 +16,29 @@ final class Config
             throw new \InvalidArgumentException('DAILY_AMOUNT must have exactly 2 decimal places (e.g. "5.00"), got: ' . $amount);
         }
 
+        // Secrets come from config/env ONLY — never a hard-coded fallback.
+        foreach (['APP_ID', 'APP_PASSWORD'] as $secret) {
+            if (getenv($secret) === false || getenv($secret) === '') {
+                throw new \InvalidArgumentException("$secret must be provided via environment — refusing to boot with a default credential");
+            }
+        }
+
         return [
             'port'          => (int)$g('PORT', '8080'),
             'platformUrl'   => rtrim($g('PLATFORM_URL', 'http://127.0.0.1:9100'), '/'),
-            'applicationId' => $g('APP_ID', 'APP_000123'),
-            'password'      => $g('APP_PASSWORD', 'demo-password'),
+            'applicationId' => (string)getenv('APP_ID'),
+            'password'      => (string)getenv('APP_PASSWORD'),
             'amount'        => $amount,
             'currency'      => $g('DAILY_CURRENCY', 'XTS'),
             'shortcode'     => $g('SMS_SHORTCODE', '3030'),
             'billingTz'     => $g('BILLING_TZ', 'UTC'),
             'dbPath'        => $g('DB_PATH', 'data/daily-pass.db'),
             'httpTimeoutMs' => (float)$g('PLATFORM_TIMEOUT_MS', '5000'),
-            // bounded grace retries for E1326 — SECONDS before attempt N (length = max retries)
+            // bounded grace retries for E1326 (and transport errors) — SECONDS before attempt N (length = max retries)
             'graceIntervalsSec'  => array_map('floatval', explode(',', $g('GRACE_RETRY_INTERVALS_SEC', '120,300,600'))),
+            // E1318 throttle: own small budget, never consumes the grace budget
             'throttleRetrySec'   => floatval($g('THROTTLE_RETRY_SEC', '1')),
+            'throttleMaxRetries' => (int)$g('THROTTLE_MAX_RETRIES', '10'),
             'msisdnStrict'  => $g('MSISDN_STRICT', 'true') !== 'false',
             'jobIntervalMin' => (int)$g('JOB_INTERVAL_MINUTES', '0'),
         ];
