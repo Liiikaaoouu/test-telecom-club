@@ -29,6 +29,8 @@ MOCK=http://localhost:9100
 ```bash
 curl -sX POST $SVC/opt-in -d '{"msisdn":"'$MSISDN'"}'
 # → {"ok":true,"status":"ACTIVE"}
+# повторный opt-in активного: {"ok":true,"alreadyActive":true}; гонка opt-in'ов — 409,
+# платформе ровно один action:"1" (атомарный claim)
 curl -s $MOCK/admin/sms          # приветственное SMS видно в моке
 ```
 
