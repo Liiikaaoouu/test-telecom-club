@@ -28,6 +28,9 @@ final class Config
             'platformUrl'   => rtrim($g('PLATFORM_URL', 'http://127.0.0.1:9100'), '/'),
             'applicationId' => (string)getenv('APP_ID'),
             'password'      => (string)getenv('APP_PASSWORD'),
+            // optional hardening; empty string = disabled (demo default)
+            'webhookSecret' => $g('CARRIER_WEBHOOK_SECRET', ''),
+            'apiToken'      => $g('SERVICE_API_TOKEN', ''),
             'amount'        => $amount,
             'currency'      => $g('DAILY_CURRENCY', 'XTS'),
             'shortcode'     => $g('SMS_SHORTCODE', '3030'),

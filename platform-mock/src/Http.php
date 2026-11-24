@@ -6,13 +6,13 @@ namespace PlatformMock;
 final class Http
 {
     /** @return array{status: int, data: array<string, mixed>} */
-    public static function postJson(string $url, array $body, float $timeoutMs = 15000): array
+    public static function postJson(string $url, array $body, float $timeoutMs = 15000, array $headers = []): array
     {
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_POST => true,
-            CURLOPT_HTTPHEADER => ['content-type: application/json'],
+            CURLOPT_HTTPHEADER => array_merge(['content-type: application/json'], $headers),
             CURLOPT_TIMEOUT_MS => (int)$timeoutMs,
             CURLOPT_POSTFIELDS => json_encode($body, JSON_UNESCAPED_SLASHES),
         ]);

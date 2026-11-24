@@ -170,7 +170,7 @@ function tailFile(string $path, int $lines = 25): string
 }
 
 /** @return array<string, mixed> */
-function bootStack(array $svcOverrides = []): array
+function bootStack(array $svcOverrides = [], array $mockOverrides = []): array
 {
     $root = projectRoot();
     $tmp = sys_get_temp_dir() . '/dp-' . bin2hex(random_bytes(6));
@@ -180,13 +180,13 @@ function bootStack(array $svcOverrides = []): array
 
     $common = ['APP_ID' => 'APP_TEST', 'APP_PASSWORD' => 'demo-password'];
 
-    $mockEnv = $common + [
+    $mockEnv = array_replace($common + [
         'PORT' => $mockPort,
         'MOCK_DB' => "$tmp/mock.db",
         'SERVICE_URL' => "http://127.0.0.1:$svcPort",
         'PHP_CLI_SERVER_WORKERS' => 4,
-    ];
-    $svcEnv = $common + [
+    ], $mockOverrides);
+    $svcEnv = array_replace($common + [
         'PORT' => $svcPort,
         'DB_PATH' => "$tmp/service.db",
         'PLATFORM_URL' => "http://127.0.0.1:$mockPort",
@@ -196,7 +196,7 @@ function bootStack(array $svcOverrides = []): array
         'THROTTLE_RETRY_SEC' => '0.5',
         'JOB_INTERVAL_MINUTES' => 0,
         'PHP_CLI_SERVER_WORKERS' => 4,
-    ] + $svcOverrides;
+    ], $svcOverrides);
 
     $st = [
         'tmp' => $tmp,
@@ -228,7 +228,7 @@ function stopServiceOnly(array $st): void
 function startServiceAgain(array $st, array $overrides = []): array
 {
     $root = projectRoot();
-    $env = $st['svcEnv'] + $overrides;
+    $env = array_replace($st['svcEnv'], $overrides);
     $st['svcPid'] = spawn($env, (int)$st['svcPort'], "$root/service/public/router.php", (string)$st['svcLog']);
     waitHealth($st['serviceUrl'] . '/health', (string)$st['svcLog']);
     return $st;
@@ -243,7 +243,7 @@ function stopStack(array $st): void
 /* ---------------- HTTP helpers ---------------- */
 
 /** @return array{status: int, data: array<string, mixed>} */
-function jreq(string $method, string $url, ?array $body = null, float $timeoutMs = 20000): array
+function jreq(string $method, string $url, ?array $body = null, float $timeoutMs = 20000, array $headers = []): array
 {
     $ch = curl_init($url);
     curl_setopt_array($ch, [
@@ -251,9 +251,13 @@ function jreq(string $method, string $url, ?array $body = null, float $timeoutMs
         CURLOPT_CUSTOMREQUEST => $method,
         CURLOPT_TIMEOUT_MS => (int)$timeoutMs,
     ]);
+    $h = $headers;
     if ($body !== null) {
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ['content-type: application/json']);
+        $h[] = 'content-type: application/json';
         curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body, JSON_UNESCAPED_SLASHES));
+    }
+    if ($h !== []) {
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $h);
     }
     $raw = curl_exec($ch);
     $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);

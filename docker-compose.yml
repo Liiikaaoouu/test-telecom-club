@@ -7,6 +7,7 @@ services:
     environment:
       - APP_ID=${APP_ID:-APP_000123}
       - APP_PASSWORD=${APP_PASSWORD:-demo-password}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
       - SERVICE_URL=http://service:8080
       - PHP_CLI_SERVER_WORKERS=4
     volumes:
@@ -30,6 +31,8 @@ services:
       - PLATFORM_URL=http://platform-mock:9100
       - APP_ID=${APP_ID:-APP_000123}
       - APP_PASSWORD=${APP_PASSWORD:-demo-password}
+      - CARRIER_WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
+      - SERVICE_API_TOKEN=${SERVICE_API_TOKEN:-}
       - DAILY_AMOUNT=${DAILY_AMOUNT:-5.00}
       - DAILY_CURRENCY=${DAILY_CURRENCY:-XTS}
       - SMS_SHORTCODE=${SMS_SHORTCODE:-3030}

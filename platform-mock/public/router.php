@@ -24,8 +24,11 @@ if (getenv('APP_ID') === false || getenv('APP_ID') === '' || getenv('APP_PASSWOR
 $creds = [
     'applicationId' => (string)getenv('APP_ID'),
     'password'      => (string)getenv('APP_PASSWORD'),
+    // optional: both sides must agree, otherwise inbound webhooks stay open
+    'webhookSecret' => (string)(getenv('WEBHOOK_SECRET') ?: ''),
 ];
 $serviceUrl = rtrim(getenv('SERVICE_URL') ?: 'http://127.0.0.1:8080', '/');
+$webhookHeaders = $creds['webhookSecret'] !== '' ? ['X-Webhook-Secret: ' . $creds['webhookSecret']] : [];
 $state = State::open(getenv('MOCK_DB') ?: (getcwd() . '/data/mock.db'));
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
@@ -169,7 +172,7 @@ if ($method === 'POST' && $path === '/admin/notify') {
     if (!is_string($payload['subscriberId']) || $payload['subscriberId'] === '') {
         respond(400, ['ok' => false, 'error' => 'subscriberId required']);
     }
-    $res = Http::postJson("$serviceUrl/webhooks/subscription-notification", $payload);
+    $res = Http::postJson("$serviceUrl/webhooks/subscription-notification", $payload, 15000, $webhookHeaders);
     Http::log('admin/notify delivered', ['status' => $payload['status'], 'reply' => $res['data']['statusCode'] ?? null]);
     // payload is returned so a caller can re-deliver the EXACT same event (duplicate test)
     respond(200, ['ok' => true, 'delivered' => $res['status'] === 200, 'webhookReply' => $res['data'], 'payload' => $payload]);
@@ -187,7 +190,7 @@ if ($method === 'POST' && $path === '/admin/mo') {
     if (!is_string($payload['sourceAddress']) || $payload['sourceAddress'] === '') {
         respond(400, ['ok' => false, 'error' => 'sourceAddress required']);
     }
-    $res = Http::postJson("$serviceUrl/webhooks/mo-sms", $payload);
+    $res = Http::postJson("$serviceUrl/webhooks/mo-sms", $payload, 15000, $webhookHeaders);
     Http::log('admin/mo delivered', ['reply' => $res['data']['statusCode'] ?? null]);
     respond(200, ['ok' => true, 'delivered' => $res['status'] === 200, 'webhookReply' => $res['data'], 'payload' => $payload]);
 }

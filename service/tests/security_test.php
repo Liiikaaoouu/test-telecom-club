@@ -100,5 +100,63 @@ T::test('a malformed DAILY_AMOUNT fails fast at boot, never reaching a debit', f
     T::contains(implode("\n", $out3), 'THREW', 'boot without APP_ID/APP_PASSWORD fails fast (no default credentials)');
 });
 
+T::test('optional webhook secret: open when unset, mandatory when set', function (): void {
+    // 1) demo default: no secret configured -> the documented flow still works
+    $open = bootStack();
+    $r = jreq('POST', "{$open['serviceUrl']}/webhooks/subscription-notification", [
+        'subscriberId' => 'tel:5550000001', 'status' => 'REGISTERED',
+        'timeStamp' => '2026-01-01T00:00:00+00:00', 'frequency' => 'DAILY',
+    ]);
+    T::eq($r['status'], 200, 'no WEBHOOK_SECRET -> webhook stays open');
+    T::eq($r['data']['statusCode'] ?? null, 'S1000');
+    stopStack($open);
+
+    // 2) secret configured on both sides
+    $s = bootStack(
+        ['CARRIER_WEBHOOK_SECRET' => 'hook-secret'],
+        ['WEBHOOK_SECRET' => 'hook-secret']
+    );
+    $payload = [
+        'subscriberId' => 'tel:5550000002', 'status' => 'REGISTERED',
+        'timeStamp' => '2026-01-01T00:00:01+00:00', 'frequency' => 'DAILY',
+    ];
+    $url = "{$s['serviceUrl']}/webhooks/subscription-notification";
+
+    T::eq(jreq('POST', $url, $payload)['status'], 401, 'no header -> 401');
+    T::eq(jreq('POST', $url, $payload, 20000, ['X-Webhook-Secret: wrong'])['status'], 401, 'wrong secret -> 401');
+
+    $st = jget("{$s['serviceUrl']}/status?subscriber=tel:5550000002")['status'];
+    T::eq($st, 404, 'rejected webhook must not create a subscriber');
+
+    $ok = jreq('POST', $url, $payload, 20000, ['X-Webhook-Secret: hook-secret']);
+    T::eq($ok['status'], 200, 'correct secret -> accepted');
+    T::eq($ok['data']['statusCode'] ?? null, 'S1000');
+    T::eq(jget("{$s['serviceUrl']}/status?subscriber=tel:5550000002")['data']['status'] ?? null, 'ACTIVE');
+
+    // the mock sends the header itself, so the productised flow is intact
+    $notify = jpost("{$s['mockUrl']}/admin/notify", ['subscriberId' => 'tel:5550000003', 'status' => 'REGISTERED']);
+    T::eq($notify['webhookReply']['statusCode'] ?? null, 'S1000', 'mock signs its webhook calls');
+
+    stopStack($s);
+});
+
+T::test('optional service token: protects /jobs and /admin, leaves product entry open', function (): void {
+    $s = bootStack(['SERVICE_API_TOKEN' => 'svc-token']);
+    $auth = ['Authorization: Bearer svc-token'];
+
+    T::eq(jget("{$s['serviceUrl']}/admin/charges")['status'], 401, 'admin without token -> 401');
+    T::eq(jreq('GET', "{$s['serviceUrl']}/admin/charges", null, 20000, ['Authorization: Bearer nope'])['status'], 401, 'wrong token -> 401');
+    T::eq(jreq('POST', "{$s['serviceUrl']}/jobs/daily-charge", [])['status'], 401, 'job without token -> 401');
+
+    T::eq(jreq('GET', "{$s['serviceUrl']}/admin/charges", null, 20000, $auth)['status'], 200, 'admin with token -> 200');
+    T::eq(jreq('POST', "{$s['serviceUrl']}/jobs/daily-charge", [], 20000, $auth)['status'], 200, 'job with token -> 200');
+
+    // the subscriber-facing surface must stay reachable
+    T::eq(jget("{$s['serviceUrl']}/health")['status'], 200, 'health is always open');
+    T::eq(jreq('POST', "{$s['serviceUrl']}/opt-in", ['msisdn' => 'tel:5550000101'])['status'], 200, 'opt-in is open');
+
+    stopStack($s);
+});
+
 T::finish('security');
 exit(T::exitCode());

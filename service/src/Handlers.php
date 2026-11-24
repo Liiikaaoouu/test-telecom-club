@@ -22,6 +22,9 @@ final class Handlers
     public function handle(string $method, string $path): void
     {
         try {
+            if (!$this->apiAuthorized($path)) {
+                return;
+            }
             match (true) {
                 $method === 'GET'  && $path === '/health' => $this->health(),
                 $method === 'POST' && $path === '/opt-in' => $this->optIn(),
@@ -92,6 +95,9 @@ final class Handlers
 
     private function subscriptionNotification(): void
     {
+        if (!$this->webhookAuthorized()) {
+            return;
+        }
         $body = $this->readJsonBody();
         $ref = is_string($body['subscriberId'] ?? null) && strlen((string)$body['subscriberId']) <= 64 ? (string)$body['subscriberId'] : null;
         if ($ref === null) {
@@ -148,6 +154,9 @@ final class Handlers
 
     private function moSms(): void
     {
+        if (!$this->webhookAuthorized()) {
+            return;
+        }
         $body = $this->readJsonBody();
         $ref = isset($body['sourceAddress']) && is_string($body['sourceAddress']) ? $body['sourceAddress'] : null;
         $message = strtoupper(trim((string)($body['message'] ?? '')));
@@ -254,6 +263,58 @@ final class Handlers
     }
 
     /* ---------------- plumbing ---------------- */
+
+    /**
+     * Optional service token on operator/finance handles.
+     *
+     * The assignment puts authentication out of scope, but demo or production
+     * deployments still need to keep /jobs/* and /admin/* off the open internet.
+     * SERVICE_API_TOKEN is optional: when it is empty (the demo default) nothing
+     * changes, so `docker compose up` and the documented curls keep working.
+     */
+    private function apiAuthorized(string $path): bool
+    {
+        $token = (string)($this->cfg['apiToken'] ?? '');
+        if ($token === '') {
+            return true;
+        }
+        $protected = str_starts_with($path, '/jobs/') || str_starts_with($path, '/admin/');
+        if (!$protected) {
+            return true;
+        }
+        $given = (string)($_SERVER['HTTP_AUTHORIZATION'] ?? '');
+        if ($given === '' && function_exists('getallheaders')) {
+            // some SAPIs (and php -S on certain builds) expose it only here
+            $all = getallheaders();
+            $given = (string)($all['Authorization'] ?? $all['authorization'] ?? '');
+        }
+        if (!hash_equals('Bearer ' . $token, $given)) {
+            $this->respond(401, ['ok' => false, 'error' => 'unauthorized']);
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Optional shared secret on inbound webhooks (§B/§C).
+     *
+     * The contract defines no signature, so this is our own defence layer: both
+     * sides read WEBHOOK_SECRET, and the platform sends it as X-Webhook-Secret.
+     * Empty secret = disabled, which keeps the single-command demo working.
+     */
+    private function webhookAuthorized(): bool
+    {
+        $secret = (string)($this->cfg['webhookSecret'] ?? '');
+        if ($secret === '') {
+            return true;
+        }
+        $given = (string)($_SERVER['HTTP_X_WEBHOOK_SECRET'] ?? '');
+        if (!hash_equals($secret, $given)) {
+            $this->respond(401, ['statusCode' => 'E0401', 'statusDetail' => 'Unauthorized']);
+            return false;
+        }
+        return true;
+    }
 
     private function respondPlatformS1000(): void
     {
