@@ -1,0 +1,15 @@
+# Normalise line endings in the repository: LF everywhere.
+#
+# Without this, a Windows checkout stores CRLF inside the Git blobs, and
+# service/entrypoint.sh then fails inside the Linux container with
+# "set: Illegal option -" — i.e. `docker compose up` on a clean clone dies.
+#
+# After changing this file, renormalise once:
+#   git add --renormalize .
+#   git add .gitattributes
+#   git commit -m "Normalise line endings (LF)"
+* text=auto eol=lf
+
+# Shell scripts and Dockerfiles must be LF even on Windows checkouts.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
