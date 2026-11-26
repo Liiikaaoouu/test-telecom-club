@@ -282,6 +282,29 @@ function jpost(string $url, ?array $body = null): array
 }
 
 /**
+ * POST raw bytes — for malformed body cases where json_encode is not an option.
+ *
+ * @return array{status: int, data: array<string, mixed>}
+ */
+function jraw(string $url, string $raw): array
+{
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CUSTOMREQUEST => 'POST',
+        CURLOPT_HTTPHEADER => ['content-type: application/json'],
+        CURLOPT_POSTFIELDS => $raw,
+        CURLOPT_TIMEOUT_MS => 20000,
+    ]);
+    $body = curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    curl_close($ch);
+    $data = json_decode((string) $body, true);
+
+    return ['status' => $status, 'data' => is_array($data) ? $data : []];
+}
+
+/**
  * Fire a POST without waiting for the response (for the opt-out race test);
  * read it later with readPendingResponse().
  * @return \Socket|resource

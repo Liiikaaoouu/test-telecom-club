@@ -35,6 +35,9 @@ final class Handlers
                 $method === 'GET'  && $path === '/admin/charges' => $this->adminCharges(),
                 default => $this->respond(404, ['ok' => false, 'error' => 'not found']),
             };
+        } catch (BadRequest $e) {
+            Logger::info('bad request', ['path' => $path, 'error' => $e->getMessage()]);
+            $this->respond(400, ['ok' => false, 'error' => $e->getMessage()]);
         } catch (\Throwable $e) {
             Logger::error('request failed', ['path' => $path, 'error' => (string)$e]);
             $this->respond(500, ['ok' => false, 'error' => 'internal error']);
@@ -104,11 +107,13 @@ final class Handlers
             $this->respond(400, ['statusCode' => 'E0400', 'statusDetail' => 'subscriberId missing'], ['content-type' => 'application/json']);
             return;
         }
-        $status = (string)($body['status'] ?? '');
+        $status = $this->optionalString($body, 'status') ?? '';
+        $timeStamp = $this->optionalString($body, 'timeStamp') ?? '';
+        $frequency = $this->optionalString($body, 'frequency') ?? '';
 
         // Idempotency: the same event delivered twice must not corrupt state
         // or cause an extra charge/SMS — dedup on (subscriber|status|timeStamp|frequency).
-        $dedupKey = sha1(implode('|', [$ref, $status, (string)($body['timeStamp'] ?? ''), (string)($body['frequency'] ?? '')]));
+        $dedupKey = sha1(implode('|', [$ref, $status, $timeStamp, $frequency]));
         if (!$this->store->recordEvent($dedupKey, 'subscription-notification', $ref, $body)) {
             Logger::info('duplicate subscription notification ignored', ['sub' => Logger::mask($ref), 'status' => $status]);
             $this->respondPlatformS1000();
@@ -159,7 +164,7 @@ final class Handlers
         }
         $body = $this->readJsonBody();
         $ref = isset($body['sourceAddress']) && is_string($body['sourceAddress']) ? $body['sourceAddress'] : null;
-        $message = strtoupper(trim((string)($body['message'] ?? '')));
+        $message = strtoupper(trim($this->optionalString($body, 'message') ?? ''));
 
         if ($message === 'STOP' && $ref !== null) {
             $sub = $this->store->getSubscriber($ref);
@@ -196,12 +201,11 @@ final class Handlers
     private function dailyCharge(): void
     {
         $body = $this->readJsonBody();
-        $day = $body['day'] ?? null;
-        if ($day !== null && !preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)$day)) {
-            $this->respond(400, ['ok' => false, 'error' => 'day must be YYYY-MM-DD']);
-            return;
+        $day = $this->optionalString($body, 'day');
+        if ($day !== null && !self::isCalendarDay($day)) {
+            throw new BadRequest('day must be a real date (YYYY-MM-DD)');
         }
-        $summary = $this->job->runDaily($day !== null ? (string)$day : null);
+        $summary = $this->job->runDaily($day);
         $this->respond(200, ['ok' => true] + $summary);
     }
 
@@ -237,7 +241,12 @@ final class Handlers
     private function adminCharges(): void
     {
         // Finance answer to: "was MSISDN X charged today, and what's the reference?"
-        $rows = $this->store->listCharges($_GET['subscriber'] ?? null, $_GET['day'] ?? null);
+        $ref = $this->queryString('subscriber');
+        $day = $this->queryString('day');
+        if ($day !== null && !self::isCalendarDay($day)) {
+            throw new BadRequest('day must be a real date (YYYY-MM-DD)');
+        }
+        $rows = $this->store->listCharges($ref, $day);
         $this->respond(200, [
             'count' => count($rows),
             'charges' => array_map(static fn(array $r): array => [
@@ -329,13 +338,55 @@ final class Handlers
             return [];
         }
         if (strlen($raw) > 1_000_000) {
-            throw new \RuntimeException('body too large');
+            throw new BadRequest('body too large');
         }
         $data = json_decode($raw, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            throw new BadRequest('invalid JSON body');
+        }
         if (!is_array($data)) {
-            throw new \RuntimeException('invalid JSON body');
+            throw new BadRequest('JSON body must be an object');
         }
         return $data;
+    }
+
+    /**
+     * Optional string field of a JSON object. A non-scalar (array/object) is a
+     * client error, not a warning: casting it would print a PHP warning into
+     * the response and break the headers.
+     *
+     * @param array<string, mixed> $body
+     */
+    private function optionalString(array $body, string $key): ?string
+    {
+        if (!array_key_exists($key, $body) || $body[$key] === null) {
+            return null;
+        }
+        if (!is_string($body[$key])) {
+            throw new BadRequest("$key must be a string");
+        }
+        return $body[$key];
+    }
+
+    /** Same for query parameters: ?subscriber[]=x must be a 400, not a TypeError. */
+    private function queryString(string $key): ?string
+    {
+        if (!array_key_exists($key, $_GET)) {
+            return null;
+        }
+        if (!is_string($_GET[$key])) {
+            throw new BadRequest("$key query parameter must be a single value");
+        }
+        return $_GET[$key] === '' ? null : $_GET[$key];
+    }
+
+    /** A real calendar date, so --day=2026-02-31 cannot reserve a billing day. */
+    private static function isCalendarDay(string $day): bool
+    {
+        if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $day, $m) !== 1) {
+            return false;
+        }
+        return checkdate((int)$m[2], (int)$m[3], (int)$m[1]);
     }
 
     /** @param array<string, mixed> $obj */

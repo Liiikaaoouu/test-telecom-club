@@ -11,7 +11,7 @@ final class Config
         $g = static fn (string $k, string $d): string => (($v = getenv($k)) !== false && $v !== '') ? $v : $d;
 
         $amount = $g('DAILY_AMOUNT', '5.00');
-        if (!preg_match('/^\d+\.\d{2}$/', $amount)) {
+        if (!Validation::amount($amount)['ok']) {
             // fail fast at boot: a malformed amount must never reach a debit request
             throw new \InvalidArgumentException('DAILY_AMOUNT must have exactly 2 decimal places (e.g. "5.00"), got: ' . $amount);
         }

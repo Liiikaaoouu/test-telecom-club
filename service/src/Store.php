@@ -13,11 +13,6 @@ final class Store
     {
     }
 
-    public function getDb(): \PDO
-    {
-        return $this->pdo;
-    }
-
     /* ---------------- subscribers ---------------- */
 
     /** @return array<string, mixed>|null */

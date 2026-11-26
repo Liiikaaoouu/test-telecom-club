@@ -28,7 +28,7 @@ final class ChargeJob
         return 'DP-' . str_replace('-', '', $billingDay) . '-' . substr(sha1("$subscriberRef|$billingDay"), 0, 12);
     }
 
-    /** @param array<string, int> $summary */
+    /** Sends an MT SMS. Failures are logged, never thrown: an SMS problem must not break the money path. */
     public function sendSms(string $ref, string $text): void
     {
         try {

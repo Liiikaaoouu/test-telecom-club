@@ -20,14 +20,14 @@ final class State
         $pdo->exec('PRAGMA journal_mode = WAL');
         $pdo->exec('PRAGMA busy_timeout = 5000');
         $pdo->exec(<<<'SQL'
-CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS sub_modes (subscriber_id TEXT PRIMARY KEY, status TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS subscriptions (subscriber_id TEXT PRIMARY KEY, status TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS subscription_calls (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, action TEXT NOT NULL, subscriber_id TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS sms (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, message TEXT NOT NULL, destinations TEXT NOT NULL, source TEXT);
-CREATE TABLE IF NOT EXISTS debits_ok (external_trx_id TEXT PRIMARY KEY, result TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS debit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, external_trx_id TEXT NOT NULL, subscriber_id TEXT NOT NULL, amount TEXT, result_code TEXT NOT NULL);
-SQL);
+            CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS sub_modes (subscriber_id TEXT PRIMARY KEY, status TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS subscriptions (subscriber_id TEXT PRIMARY KEY, status TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS subscription_calls (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, action TEXT NOT NULL, subscriber_id TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS sms (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, message TEXT NOT NULL, destinations TEXT NOT NULL, source TEXT);
+            CREATE TABLE IF NOT EXISTS debits_ok (external_trx_id TEXT PRIMARY KEY, result TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS debit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, external_trx_id TEXT NOT NULL, subscriber_id TEXT NOT NULL, amount TEXT, result_code TEXT NOT NULL);
+        SQL);
         return new self($pdo);
     }
 
@@ -53,6 +53,7 @@ SQL);
     }
 
     public function setLatencyMs(int $ms): void { $this->setSetting('latency_ms', (string)$ms); }
+    
     public function latencyMs(): int { return (int)$this->getSetting('latency_ms', '0'); }
 
     private function setSetting(string $k, string $v): void

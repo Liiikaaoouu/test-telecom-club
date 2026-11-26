@@ -84,9 +84,19 @@ if ($method === 'POST' && $path === '/caas/direct/debit') {
         respond(400, ['statusCode' => 'E0400', 'statusDetail' => 'externalTrxId and subscriberId required']);
     }
 
+    // §D requires amount as a 2-dp decimal and an ISO-4217-style currency.
+    // Being strict here is the point of the mock: a regression in the service
+    // (missing amount, "5" instead of "5.00") must fail loudly.
+    $amount = $body['amount'] ?? null;
+    $currency = $body['currency'] ?? null;
+    if (!is_string($amount) || preg_match('/^\d+\.\d{2}$/', $amount) !== 1
+        || !is_string($currency) || preg_match('/^[A-Z]{3}$/', $currency) !== 1) {
+        respond(400, ['statusCode' => 'E0400', 'statusDetail' => 'amount (2 decimal places) and currency are required by §D']);
+    }
+
     // dedup on the idempotency key: a key that already SUCCEEDED is consumed forever
     if (($original = $state->debitSuccess($ext)) !== null) {
-        $state->logDebitAttempt($ext, $subscriberId, isset($body['amount']) ? (string)$body['amount'] : null, 'E1337');
+        $state->logDebitAttempt($ext, $subscriberId, $amount, 'E1337');
         Http::log('debit DUPLICATE', ['externalTrxId' => $ext]);
         // a real gateway's duplicate reply still identifies the original transaction
         respond(200, ['statusCode' => 'E1337', 'statusDetail' => 'Duplicate request', 'externalTrxId' => $ext,
@@ -97,7 +107,6 @@ if ($method === 'POST' && $path === '/caas/direct/debit') {
         usleep($ms * 1000); // configurable latency — lets demos exercise the opt-out race
     }
 
-    $amount = isset($body['amount']) ? (string)$body['amount'] : null;
     $forced = $state->effectiveMode($subscriberId);
     if ($forced === 'S1000') {
         $result = [
@@ -143,9 +152,9 @@ if ($method === 'GET' && $path === '/admin/subscriptions') {
 }
 
 if ($method === 'POST' && $path === '/admin/mode') {
-    $status = (string)($body['status'] ?? '');
+    $status = $body['status'] ?? '';
     $allowed = ['S1000', 'E1326', 'E1308', 'E1337', 'E1318'];
-    if (!in_array($status, $allowed, true)) {
+    if (!is_string($status) || !in_array($status, $allowed, true)) {
         respond(400, ['ok' => false, 'error' => 'status must be one of ' . implode(', ', $allowed)]);
     }
     $subscriberId = isset($body['subscriberId']) && is_string($body['subscriberId']) ? $body['subscriberId'] : null;

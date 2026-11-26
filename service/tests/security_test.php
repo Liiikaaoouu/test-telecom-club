@@ -26,6 +26,32 @@ T::test('MSISDN and input validation rejects junk at the boundary', function ():
     $r = jreq('POST', "{$s['serviceUrl']}/jobs/daily-charge", ['day' => 'tomorrow']);
     T::eq($r['status'], 400, 'day must be YYYY-MM-DD');
 
+    // Boundary hygiene: malformed input is a 400 — never a 500, and never a PHP
+    // warning printed into the response (display_errors is off in the image).
+    T::eq(jraw("{$s['serviceUrl']}/opt-in", '{"msisdn":"tel:1000000009"')['status'], 400, 'malformed JSON -> 400');
+    T::eq(jraw("{$s['serviceUrl']}/opt-in", '"string"')['status'], 400, 'non-object JSON -> 400');
+    T::eq(jraw("{$s['serviceUrl']}/opt-in", 'null')['status'], 400, 'null JSON -> 400');
+    T::eq(jreq('POST', "{$s['serviceUrl']}/webhooks/subscription-notification", [
+        'subscriberId' => 'tel:1000000009', 'status' => 'REGISTERED', 'timeStamp' => ['x'],
+    ])['status'], 400, 'array timeStamp -> 400');
+    T::eq(jget("{$s['serviceUrl']}/admin/charges?subscriber[]=x")['status'], 400, 'array query param -> 400');
+
+    // A billing day must be a real calendar date.
+    T::eq(jreq('POST', "{$s['serviceUrl']}/jobs/daily-charge", ['day' => '2026-02-31'])['status'], 400, '2026-02-31 -> 400');
+    T::eq(jreq('POST', "{$s['serviceUrl']}/jobs/daily-charge", ['day' => '2026-13-01'])['status'], 400, '2026-13-01 -> 400');
+    T::eq(jreq('POST', "{$s['serviceUrl']}/jobs/daily-charge", ['day' => '2026-11-26'])['status'], 200, 'a real date still works');
+
+    // §D is the money contract: the mock must reject a debit without a 2-dp amount.
+    $auth = ['applicationId' => 'APP_TEST', 'password' => 'demo-password'];
+    $noAmount = jreq('POST', "{$s['mockUrl']}/caas/direct/debit", $auth + [
+        'externalTrxId' => 'BOUNDARY-1', 'subscriberId' => 'tel:1000000009', 'currency' => 'XTS',
+    ]);
+    T::eq($noAmount['status'], 400, 'mock rejects a debit without amount');
+    $badAmount = jreq('POST', "{$s['mockUrl']}/caas/direct/debit", $auth + [
+        'externalTrxId' => 'BOUNDARY-2', 'subscriberId' => 'tel:1000000009', 'amount' => '5', 'currency' => 'XTS',
+    ]);
+    T::eq($badAmount['status'], 400, 'mock rejects an amount with one decimal');
+
     stopStack($s);
 });
 

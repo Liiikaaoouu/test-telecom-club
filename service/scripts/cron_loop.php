@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+namespace DailyPass;
+
 /**
  * Optional scheduler: when JOB_INTERVAL_MINUTES > 0, POSTs /jobs/daily-charge
  * into the local service every interval. The job itself is idempotent, so it
